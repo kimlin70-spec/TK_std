@@ -4,7 +4,6 @@ src-tauri/target/
 src-tauri/gen/schemas/
 # generated from src-tauri/app-icon.svg (npm run tauri icon src-tauri/app-icon.svg)
 src-tauri/icons/
-src-tauri/Cargo.lock
 tests/output/
 *.log
 .DS_Store

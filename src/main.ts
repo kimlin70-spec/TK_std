@@ -36,11 +36,12 @@ const toolButtons: Record<Tool, HTMLButtonElement> = {
   text: $("btn-text"),
 };
 for (const [tool, btn] of Object.entries(toolButtons)) {
-  btn.addEventListener("click", () => {
-    editor.setTool(tool as Tool);
-    btn.blur();
-  });
+  btn.addEventListener("click", () => editor.setTool(tool as Tool));
 }
+// Keep keyboard focus off the buttons so Space/Enter never re-trigger them.
+$<HTMLDivElement>("toolbar").addEventListener("click", (e) => {
+  (e.target as HTMLElement).closest("button")?.blur();
+});
 $("btn-open").addEventListener("click", () => void openFile());
 $("btn-undo").addEventListener("click", () => editor.undo());
 $("btn-save").addEventListener("click", () => void save());
@@ -232,25 +233,42 @@ async function copy(): Promise<void> {
 
 // ---------------------------------------------------------------- keyboard
 
+// WebView2 keeps the browser's own accelerators (reload, find, print, caret
+// browsing, dev tools). A reload would silently throw away the photo and
+// every annotation, so they are blocked at the page level.
+const BLOCKED_KEYS = new Set(["F5", "F3", "F7", "F12"]);
+const BLOCKED_CTRL_CODES = new Set(["KeyR", "KeyP", "KeyF"]);
+
 window.addEventListener("keydown", (e) => {
   if (e.isComposing || e.keyCode === 229) return;
-  if (e.target === textarea) return;
   const ctrl = e.ctrlKey || e.metaKey;
+  if (BLOCKED_KEYS.has(e.key) || (ctrl && BLOCKED_CTRL_CODES.has(e.code))) {
+    e.preventDefault();
+    return;
+  }
+  // These also work while typing in a text box; the box is closed first.
+  if (ctrl && e.code === "KeyS") {
+    e.preventDefault();
+    void save();
+    return;
+  }
+  if (ctrl && e.shiftKey && e.code === "KeyC") {
+    e.preventDefault();
+    void copy();
+    return;
+  }
+  if (ctrl && e.code === "KeyO") {
+    e.preventDefault();
+    void openFile();
+    return;
+  }
+  if (e.target === textarea) return;
   if (ctrl && e.code === "KeyZ" && !e.shiftKey) {
     e.preventDefault();
     editor.undo();
   } else if (ctrl && (e.code === "KeyY" || (e.code === "KeyZ" && e.shiftKey))) {
     e.preventDefault();
     editor.redo();
-  } else if (ctrl && e.code === "KeyS") {
-    e.preventDefault();
-    void save();
-  } else if (ctrl && e.shiftKey && e.code === "KeyC") {
-    e.preventDefault();
-    void copy();
-  } else if (ctrl && e.code === "KeyO") {
-    e.preventDefault();
-    void openFile();
   } else if (ctrl && e.code === "KeyV") {
     if (platform.isTauri) {
       e.preventDefault();

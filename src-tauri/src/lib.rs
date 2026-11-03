@@ -3,6 +3,9 @@
 //! The webview does all drawing; these commands only touch things the
 //! browser sandbox cannot: reading/writing files at arbitrary paths and
 //! moving images in and out of the system clipboard.
+//!
+//! All commands are `async` so that PNG encoding/decoding of a large
+//! screenshot runs on the async runtime instead of blocking the UI thread.
 
 use std::io::Cursor;
 use std::path::Path;
@@ -31,7 +34,7 @@ fn header_path(request: &Request<'_>) -> Result<String, String> {
 }
 
 /// Read a file and hand its bytes to the webview as an ArrayBuffer.
-#[tauri::command]
+#[tauri::command(async)]
 fn read_file(path: String) -> Result<Response, String> {
     let bytes = std::fs::read(&path).map_err(|e| format!("{path}: {e}"))?;
     Ok(Response::new(bytes))
@@ -39,7 +42,7 @@ fn read_file(path: String) -> Result<Response, String> {
 
 /// Write the raw request body to the path given in the `x-path` header
 /// (percent-encoded so that non-ASCII paths survive the header).
-#[tauri::command]
+#[tauri::command(async)]
 fn write_file(request: Request<'_>) -> Result<(), String> {
     let path = header_path(&request)?;
     let bytes = raw_body(&request)?;
@@ -52,7 +55,7 @@ fn write_file(request: Request<'_>) -> Result<(), String> {
 }
 
 /// Return the clipboard image as PNG bytes, or an error when there is none.
-#[tauri::command]
+#[tauri::command(async)]
 fn clipboard_read_image() -> Result<Response, String> {
     let mut clipboard = arboard::Clipboard::new().map_err(|e| e.to_string())?;
     let img = clipboard
@@ -78,7 +81,7 @@ fn clipboard_read_image() -> Result<Response, String> {
 }
 
 /// Put the PNG in the raw request body onto the clipboard as a bitmap.
-#[tauri::command]
+#[tauri::command(async)]
 fn clipboard_write_image(request: Request<'_>) -> Result<(), String> {
     let bytes = raw_body(&request)?;
     let decoded = image::load_from_memory_with_format(&bytes, ImageFormat::Png)
