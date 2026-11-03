@@ -33,6 +33,7 @@ const toolButtons: Record<Tool, HTMLButtonElement> = {
   select: $("btn-select"),
   arrow: $("btn-arrow"),
   rect: $("btn-rect"),
+  polygon: $("btn-polygon"),
   text: $("btn-text"),
 };
 for (const [tool, btn] of Object.entries(toolButtons)) {
@@ -275,17 +276,20 @@ window.addEventListener("keydown", (e) => {
       void pasteFromClipboard();
     }
   } else if (e.key === "Delete" || e.key === "Backspace") {
-    if (editor.selection) {
+    if (editor.isPlacing) {
+      e.preventDefault();
+      editor.removeLastPolygonPoint();
+    } else if (editor.selection) {
       e.preventDefault();
       editor.deleteSelected();
     }
   } else if (e.key === "Enter") {
-    if (editor.selection) {
+    if (!editor.isPlacing && editor.selection) {
       e.preventDefault();
       editor.editSelected();
     }
   } else if (e.key === "Escape") {
-    editor.select(null);
+    editor.escape();
   }
 });
 

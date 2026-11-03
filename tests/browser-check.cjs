@@ -296,9 +296,73 @@ async function main() {
       });
     let nums = await numbers();
     assert.deepEqual([nums[arrow1], nums[rect.id], nums[arrow2]], [1, 2, 3]);
-    await page.click("#btn-select");
-    await page.screenshot({ path: path.join(OUT, "03-annotated.png") });
     console.log("numbering: ok");
+
+    // ---- 7b. polygon: click points, Backspace, pan while placing, close on first point ----
+    await page.click("#btn-polygon");
+    const poly = [
+      { x: 200, y: 250 },
+      { x: 520, y: 230 },
+      { x: 600, y: 420 },
+      { x: 380, y: 520 },
+      { x: 180, y: 430 },
+    ];
+    const clickImage = async (p) => {
+      const sp = await toScreen(p);
+      await page.mouse.click(sp.x, sp.y);
+      await sleep(30);
+    };
+    const placedCount = () => ed(() => (window.__editor.placing ? window.__editor.placing.points.length : 0));
+    for (const p of poly) await clickImage(p);
+    assert.equal(await placedCount(), 5, "five points placed");
+    await clickImage(poly[4]);
+    assert.equal(await placedCount(), 5, "click on the previous point is ignored");
+    await page.keyboard.press("Backspace");
+    assert.equal(await placedCount(), 4, "Backspace drops the last point");
+    await clickImage(poly[4]);
+    assert.equal(await placedCount(), 5);
+    const vx0 = (await state()).viewX;
+    const panFrom = await toScreen({ x: 900, y: 150 });
+    await drag(panFrom, { x: panFrom.x + 50, y: panFrom.y });
+    st = await state();
+    assert.ok(Math.abs(st.viewX - (vx0 + 50)) < 2, "dragging pans while placing");
+    assert.equal(await placedCount(), 5, "a pan adds no point");
+    await drag({ x: panFrom.x + 50, y: panFrom.y }, panFrom);
+    await ed(() => window.__editor.renderComposite());
+    assert.equal(await ed(() => window.__editor.isPlacing), true, "export keeps the polygon in progress");
+    await page.screenshot({ path: path.join(OUT, "03b-polygon-placing.png") });
+    await clickImage(poly[0]);
+    await page.waitForSelector("#text-editor", { state: "visible" });
+    await page.keyboard.type("이 부분은 잘라내기");
+    await page.keyboard.press("Escape");
+    st = await state();
+    assert.equal(st.annotations.length, 5);
+    const polyAnn = st.annotations[4];
+    assert.equal(polyAnn.kind, "polygon");
+    // Mouse positions are whole screen pixels, so allow ~1 screen pixel of error.
+    polyAnn.points.forEach((p, i) => {
+      assert.ok(Math.abs(p.x - poly[i].x) < 2 && Math.abs(p.y - poly[i].y) < 2, `corner ${i} is where it was clicked`);
+    });
+    assert.equal(polyAnn.label.text, "이 부분은 잘라내기");
+    const polyId = polyAnn.id;
+    nums = await numbers();
+    assert.deepEqual([nums[arrow1], nums[rect.id], nums[arrow2], nums[polyId]], [1, 2, 3, 4]);
+    // Fewer than three points cannot close; Esc and a tool switch discard the outline.
+    await clickImage({ x: 900, y: 150 });
+    await clickImage({ x: 950, y: 200 });
+    await clickImage({ x: 900, y: 150 });
+    assert.equal(await placedCount(), 2, "closing needs three points");
+    await page.keyboard.press("Escape");
+    assert.equal(await ed(() => window.__editor.isPlacing), false, "Esc discards");
+    await clickImage({ x: 900, y: 150 });
+    await clickImage({ x: 950, y: 200 });
+    await clickImage({ x: 900, y: 220 });
+    await page.click("#btn-select");
+    assert.equal(await ed(() => window.__editor.isPlacing), false, "tool switch discards");
+    st = await state();
+    assert.equal(st.annotations.length, 5, "discarded outlines add nothing");
+    await page.screenshot({ path: path.join(OUT, "03-annotated.png") });
+    console.log("polygon: ok");
 
     // ---- 8. select + delete renumbers --------------------------------------
     const a1 = st.annotations[0];
@@ -314,24 +378,24 @@ async function main() {
     await page.screenshot({ path: path.join(OUT, "04-selected-arrow.png") });
     await page.keyboard.press("Delete");
     st = await state();
-    assert.equal(st.annotations.length, 3);
+    assert.equal(st.annotations.length, 4);
     nums = await numbers();
-    assert.deepEqual([nums[rect.id], nums[arrow2]], [1, 2], "renumbered after delete");
+    assert.deepEqual([nums[rect.id], nums[arrow2], nums[polyId]], [1, 2, 3], "renumbered after delete");
     console.log("delete + renumber: ok");
 
     // ---- 9. undo / redo ---------------------------------------------------
     await page.keyboard.press("Control+Z");
     st = await state();
-    assert.equal(st.annotations.length, 4, "undo restores the arrow");
+    assert.equal(st.annotations.length, 5, "undo restores the arrow");
     assert.equal(st.canRedo, true);
     await page.keyboard.press("Control+Y");
     st = await state();
-    assert.equal(st.annotations.length, 3, "redo deletes again");
+    assert.equal(st.annotations.length, 4, "redo deletes again");
     await page.click("#btn-undo");
     st = await state();
-    assert.equal(st.annotations.length, 4, "undo button");
+    assert.equal(st.annotations.length, 5, "undo button");
     nums = await numbers();
-    assert.deepEqual([nums[arrow1], nums[rect.id], nums[arrow2]], [1, 2, 3]);
+    assert.deepEqual([nums[arrow1], nums[rect.id], nums[arrow2], nums[polyId]], [1, 2, 3, 4]);
     console.log("undo/redo: ok");
 
     // ---- 10. move a label (connector follows) ---------------------------------
@@ -385,6 +449,34 @@ async function main() {
     assert.ok(Math.abs(a2b.tip.x - (a2.tip.x - 80 / fitScale)) < 2, "tip moved x");
     assert.ok(Math.abs(a2b.tip.y - (a2.tip.y - 50 / fitScale)) < 2, "tip moved y");
     console.log("arrow tip handle: ok");
+
+    // ---- 12b. polygon: select by an edge, drag a corner handle, move the whole outline ----
+    const edgeMid = await toScreen({ x: 360, y: 240 });
+    await page.mouse.click(edgeMid.x, edgeMid.y);
+    st = await state();
+    assert.deepEqual(st.selection, { id: polyId, part: "shape" }, "clicking an edge selects the polygon");
+    await page.screenshot({ path: path.join(OUT, "05b-selected-polygon.png") });
+    const v2 = await toScreen({ x: 600, y: 420 });
+    await drag(v2, { x: v2.x + 40, y: v2.y + 30 });
+    st = await state();
+    const pg = st.annotations.find((a) => a.id === polyId);
+    assert.ok(Math.abs(pg.points[2].x - (600 + 40 / fitScale)) < 2, "corner dragged x");
+    assert.ok(Math.abs(pg.points[2].y - (420 + 30 / fitScale)) < 2, "corner dragged y");
+    assert.deepEqual([Math.round(pg.points[0].x), Math.round(pg.points[0].y)], [200, 250], "other corners untouched");
+    const edge2 = await toScreen({ x: 360, y: 240 });
+    await drag(edge2, { x: edge2.x + 30, y: edge2.y + 20 });
+    st = await state();
+    const pg2 = st.annotations.find((a) => a.id === polyId);
+    assert.ok(Math.abs(pg2.points[0].x - (pg.points[0].x + 30 / fitScale)) < 2, "polygon moved");
+    assert.ok(Math.abs(pg2.label.x - (pg.label.x + 30 / fitScale)) < 2, "polygon label followed");
+    await page.keyboard.press("Control+Z");
+    st = await state();
+    assert.deepEqual(
+      st.annotations.find((a) => a.id === polyId).points.map((p) => Math.round(p.x)),
+      pg.points.map((p) => Math.round(p.x)),
+      "undo reverts the move",
+    );
+    console.log("polygon edit: ok");
 
     // ---- 13. double-click to edit, Enter for a new line ----------------------------
     const tbox = await labelBox(textId);

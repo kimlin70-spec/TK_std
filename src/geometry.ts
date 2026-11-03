@@ -71,3 +71,31 @@ export function normalizeBox(b: Box): Box {
     h: Math.abs(b.h),
   };
 }
+
+/** Axis-aligned bounding box of a point list (at least one point). */
+export function bbox(points: Point[]): Box {
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const p of points) {
+    minX = Math.min(minX, p.x);
+    minY = Math.min(minY, p.y);
+    maxX = Math.max(maxX, p.x);
+    maxY = Math.max(maxY, p.y);
+  }
+  return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
+}
+
+export function nearestPoint(points: Point[], p: Point): Point {
+  let best = points[0];
+  let bestD = Infinity;
+  for (const c of points) {
+    const d = dist(c, p);
+    if (d < bestD) {
+      bestD = d;
+      best = c;
+    }
+  }
+  return best;
+}

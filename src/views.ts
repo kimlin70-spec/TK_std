@@ -11,6 +11,7 @@ import {
   type ArrowAnnotation,
   type Label,
   type Point,
+  type PolygonAnnotation,
   type RectAnnotation,
   type Style,
   type TextAnnotation,
@@ -22,6 +23,7 @@ import {
   clamp,
   dist,
   nearestCorner,
+  nearestPoint,
   normalize,
   rayExit,
 } from "./geometry";
@@ -322,6 +324,72 @@ export class RectView {
   }
 }
 
+export class PolygonView {
+  readonly kind = "polygon" as const;
+  readonly group: Konva.Group;
+  readonly label = new LabelView();
+  /** The magenta outline; the selection border is drawn around the group. */
+  readonly outline: Konva.Line;
+  private readonly whiteOutline: Konva.Line;
+  private readonly whiteConnector: Konva.Line;
+  private readonly connector: Konva.Line;
+  private readonly badge = new BadgeView();
+
+  constructor(id: string) {
+    this.group = makeGroup(id);
+    this.whiteOutline = new Konva.Line({ stroke: WHITE, closed: true, lineJoin: "round", listening: false });
+    this.outline = new Konva.Line({ stroke: MAGENTA, closed: true, lineJoin: "round", name: PART_SHAPE });
+    this.whiteConnector = new Konva.Line({ stroke: WHITE, lineCap: "round", listening: false });
+    this.connector = new Konva.Line({ stroke: MAGENTA, lineCap: "round", name: PART_SHAPE });
+    this.group.add(
+      this.whiteOutline,
+      this.outline,
+      this.whiteConnector,
+      this.connector,
+      this.badge.group,
+      this.label.group,
+    );
+  }
+
+  sync(ann: PolygonAnnotation, number: number, ctx: RenderContext): void {
+    const s = ctx.style;
+    const o = s.outline;
+    const flat = ann.points.flatMap((p) => [p.x, p.y]);
+    this.whiteOutline.setAttrs({ points: flat, strokeWidth: s.stroke + 2 * o });
+    this.outline.setAttrs({
+      points: flat,
+      strokeWidth: s.stroke,
+      hitStrokeWidth: hitWidth(ctx, s.stroke + 2 * o),
+    });
+
+    const box = this.label.sync(ann.label, number, ctx);
+    const c = boxCenter(box);
+    const vertex = nearestPoint(ann.points, c);
+    let show = !boxContains(box, vertex);
+    let pts: number[] = [];
+    if (show) {
+      const dir = normalize(vertex.x - c.x, vertex.y - c.y);
+      const exit = rayExit(c, dir, box);
+      const start = { x: exit.x + dir.x * s.stroke * 0.8, y: exit.y + dir.y * s.stroke * 0.8 };
+      show = dist(start, vertex) > s.stroke * 1.5;
+      pts = [start.x, start.y, vertex.x, vertex.y];
+    }
+    this.whiteConnector.setAttrs({ points: pts, strokeWidth: s.connectorWidth + 2 * o * 0.8, visible: show });
+    this.connector.setAttrs({
+      points: pts,
+      strokeWidth: s.connectorWidth,
+      hitStrokeWidth: hitWidth(ctx, s.connectorWidth + 2 * o),
+      visible: show,
+    });
+
+    this.badge.sync(ann.points[0], number, ctx);
+  }
+
+  shapeNode(): Konva.Node {
+    return this.outline;
+  }
+}
+
 export class TextView {
   readonly kind = "text" as const;
   readonly group: Konva.Group;
@@ -341,7 +409,7 @@ export class TextView {
   }
 }
 
-export type AnnotationView = ArrowView | RectView | TextView;
+export type AnnotationView = ArrowView | RectView | PolygonView | TextView;
 
 export function createView(ann: Annotation): AnnotationView {
   switch (ann.kind) {
@@ -349,6 +417,8 @@ export function createView(ann: Annotation): AnnotationView {
       return new ArrowView(ann.id);
     case "rect":
       return new RectView(ann.id);
+    case "polygon":
+      return new PolygonView(ann.id);
     case "text":
       return new TextView(ann.id);
   }
@@ -357,5 +427,6 @@ export function createView(ann: Annotation): AnnotationView {
 export function syncView(view: AnnotationView, ann: Annotation, number: number | null, ctx: RenderContext): void {
   if (view.kind === "arrow" && ann.kind === "arrow") view.sync(ann, number ?? 0, ctx);
   else if (view.kind === "rect" && ann.kind === "rect") view.sync(ann, number ?? 0, ctx);
+  else if (view.kind === "polygon" && ann.kind === "polygon") view.sync(ann, number ?? 0, ctx);
   else if (view.kind === "text" && ann.kind === "text") view.sync(ann, null, ctx);
 }

@@ -30,13 +30,21 @@ export interface RectAnnotation {
   label: Label;
 }
 
+/** Closed outline through the clicked points; the badge sits on the first one. */
+export interface PolygonAnnotation {
+  id: string;
+  kind: "polygon";
+  points: Point[];
+  label: Label;
+}
+
 export interface TextAnnotation {
   id: string;
   kind: "text";
   label: Label;
 }
 
-export type Annotation = ArrowAnnotation | RectAnnotation | TextAnnotation;
+export type Annotation = ArrowAnnotation | RectAnnotation | PolygonAnnotation | TextAnnotation;
 
 export interface Doc {
   annotations: Annotation[];
@@ -57,14 +65,14 @@ export function findAnnotation(doc: Doc, id: string): Annotation | undefined {
 }
 
 /**
- * Numbers are derived from the order of arrows/rects in the document, so
- * deleting one automatically renumbers the rest.
+ * Numbers are derived from the order of arrows/rects/polygons in the
+ * document, so deleting one automatically renumbers the rest.
  */
 export function numberMap(doc: Doc): Map<string, number> {
   const map = new Map<string, number>();
   let n = 0;
   for (const a of doc.annotations) {
-    if (a.kind === "arrow" || a.kind === "rect") {
+    if (a.kind !== "text") {
       n += 1;
       map.set(a.id, n);
     }

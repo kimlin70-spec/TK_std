@@ -1,8 +1,9 @@
 /**
  * The annotation editor: a Konva stage with the photo, the annotation views
- * and a small UI layer (selection box, arrow-tip handle). All annotation
- * geometry lives in the model in original-image pixels; the image and
- * annotation layers carry the zoom/pan transform, the UI layer does not.
+ * and a small UI layer (selection box, vertex handles, polygon preview). All
+ * annotation geometry lives in the model in original-image pixels; the image
+ * and annotation layers carry the zoom/pan transform, the UI layer does not,
+ * so nothing in it can leak into the exported picture.
  */
 import Konva from "konva";
 import {
@@ -14,14 +15,13 @@ import {
   numberMap,
   styleFor,
   type Annotation,
-  type ArrowAnnotation,
   type Doc,
   type Label,
   type Point,
-  type RectAnnotation,
+  type PolygonAnnotation,
   type Style,
 } from "./model";
-import { type Box, clamp, dist, normalizeBox } from "./geometry";
+import { type Box, bbox, clamp, dist, normalizeBox } from "./geometry";
 import {
   ANN_NAME,
   PART_LABEL,
@@ -31,7 +31,7 @@ import {
   type RenderContext,
 } from "./views";
 
-export type Tool = "select" | "arrow" | "rect" | "text";
+export type Tool = "select" | "arrow" | "rect" | "polygon" | "text";
 export type Part = "shape" | "label";
 export interface Selection {
   id: string;
@@ -47,8 +47,25 @@ interface ViewTransform {
 type Drag =
   | { kind: "pan"; startScreen: Point; startView: ViewTransform }
   | { kind: "move"; id: string; part: Part; start: Point; snapshot: Doc; moved: boolean }
-  | { kind: "tip"; id: string; moved: boolean }
-  | { kind: "create"; tool: "arrow" | "rect"; start: Point; current: Point; preview: Konva.Shape };
+  | { kind: "vertex"; id: string; index: number; moved: boolean }
+  | { kind: "create"; tool: "arrow" | "rect"; start: Point; current: Point; preview: Konva.Shape }
+  /** A press in polygon mode: pans if the mouse moves, otherwise adds a point on release. */
+  | { kind: "polyclick"; startScreen: Point; startView: ViewTransform; panning: boolean };
+
+/** Screen-space preview of the polygon being placed. */
+interface PolygonPreview {
+  group: Konva.Group;
+  pathWhite: Konva.Line;
+  path: Konva.Line;
+  rubber: Konva.Line;
+  dots: Konva.Group;
+  first: Konva.Circle;
+}
+
+interface Placing {
+  points: Point[];
+  preview: PolygonPreview;
+}
 
 export interface EditorEvents {
   /** Fired whenever toolbar state (tool, selection, history, image) may have changed. */
@@ -68,6 +85,13 @@ const ALL_ANCHORS = [
 const MIN_SCALE = 0.05;
 const MAX_SCALE = 40;
 const HISTORY_LIMIT = 200;
+const HANDLE_NAME = "vertex-handle";
+/** Screen pixels: a click this close to the first point closes the polygon. */
+const CLOSE_RADIUS = 12;
+/** Screen pixels: a press that travels further than this pans instead of adding a point. */
+const PAN_THRESHOLD = 4;
+/** Screen pixels: clicks this close to the previous point are ignored (double-clicks). */
+const DUPLICATE_RADIUS = 4;
 
 export class Editor {
   readonly stage: Konva.Stage;
@@ -75,9 +99,10 @@ export class Editor {
   private readonly annLayer = new Konva.Layer();
   private readonly uiLayer = new Konva.Layer();
   private readonly transformer: Konva.Transformer;
-  private readonly tipHandle: Konva.Circle;
   private readonly textarea: HTMLTextAreaElement;
   private readonly events: EditorEvents;
+  /** Pool of draggable vertex handles (arrow tip, polygon corners). */
+  private handles: Konva.Circle[] = [];
 
   private photo: Konva.Image | null = null;
   original: HTMLCanvasElement | null = null;
@@ -99,6 +124,7 @@ export class Editor {
   selection: Selection | null = null;
   private editing: { id: string; original: string } | null = null;
   private drag: Drag | null = null;
+  private placing: Placing | null = null;
   private transformDirty = false;
 
   private readonly onWindowMove = (evt: MouseEvent) => this.handleWindowMove(evt);
@@ -129,18 +155,12 @@ export class Editor {
       borderDash: [5, 4],
       boundBoxFunc: (oldBox, newBox) => (newBox.width < 2 || newBox.height < 2 ? oldBox : newBox),
     });
-    this.tipHandle = new Konva.Circle({
-      radius: 7,
-      fill: WHITE,
-      stroke: MAGENTA,
-      strokeWidth: 2.5,
-      hitStrokeWidth: 14,
-      visible: false,
-      name: "tip-handle",
-    });
-    this.uiLayer.add(this.transformer, this.tipHandle);
+    this.uiLayer.add(this.transformer);
 
     this.stage.on("mousedown", (e) => this.handleMouseDown(e));
+    this.stage.on("mousemove", () => {
+      if (this.placing && !this.drag) this.updatePolygonPreview(this.stage.getPointerPosition());
+    });
     this.stage.on("dblclick", (e) => this.handleDblClick(e));
     this.stage.on("wheel", (e) => this.handleWheel(e));
     this.stage.on("contextmenu", (e) => e.evt.preventDefault());
@@ -186,6 +206,10 @@ export class Editor {
   get isEditing(): boolean {
     return this.editing !== null;
   }
+  /** True while polygon points are being placed. */
+  get isPlacing(): boolean {
+    return this.placing !== null;
+  }
 
   private ctx(): RenderContext {
     return { style: this.style, imgW: this.imgW, imgH: this.imgH, scale: this.view.scale };
@@ -197,6 +221,7 @@ export class Editor {
   loadImage(canvas: HTMLCanvasElement): void {
     this.finishEditing();
     this.cancelDrag();
+    this.cancelPolygon();
     this.original = canvas;
     this.imgW = canvas.width;
     this.imgH = canvas.height;
@@ -261,7 +286,8 @@ export class Editor {
     if (scaleChanged) this.syncAll();
     this.imageLayer.batchDraw();
     this.annLayer.batchDraw();
-    this.updateTipHandle();
+    this.updateHandles();
+    if (this.placing) this.updatePolygonPreview(this.stage.getPointerPosition());
     if (this.editing) this.layoutTextarea();
   }
 
@@ -361,7 +387,7 @@ export class Editor {
     if (!ann || !view) return;
     syncView(view, ann, numberMap(this.doc).get(id) ?? null, this.ctx());
     this.annLayer.batchDraw();
-    this.updateTipHandle();
+    this.updateHandles();
     if (this.editing?.id === id) this.layoutTextarea();
   }
 
@@ -379,6 +405,7 @@ export class Editor {
   undo(): void {
     this.finishEditing();
     this.cancelDrag();
+    this.cancelPolygon();
     const prev = this.undoStack.pop();
     if (!prev) return;
     this.redoStack.push(this.committed);
@@ -391,6 +418,7 @@ export class Editor {
   redo(): void {
     this.finishEditing();
     this.cancelDrag();
+    this.cancelPolygon();
     const next = this.redoStack.pop();
     if (!next) return;
     this.undoStack.push(this.committed);
@@ -405,6 +433,7 @@ export class Editor {
   setTool(tool: Tool): void {
     if (this.tool === tool) return;
     this.finishEditing();
+    this.cancelPolygon();
     this.tool = tool;
     if (tool !== "select") this.select(null);
     this.updateCursor(null);
@@ -417,42 +446,68 @@ export class Editor {
     this.events.onChange();
   }
 
+  /** Escape: abandon the polygon being placed, otherwise clear the selection. */
+  escape(): void {
+    if (this.placing) this.cancelPolygon();
+    else this.select(null);
+  }
+
   private applySelection(): void {
     const sel = this.selection;
     const view = sel ? this.views.get(sel.id) : undefined;
     if (!sel || !view) {
       this.selection = null;
       this.transformer.nodes([]);
-      this.tipHandle.visible(false);
     } else if (sel.part === "label" || view.kind === "text") {
       this.transformer.setAttrs({ enabledAnchors: [], resizeEnabled: false });
       this.transformer.nodes([view.label.group]);
-      this.tipHandle.visible(false);
     } else if (view.kind === "rect") {
       this.transformer.setAttrs({ enabledAnchors: ALL_ANCHORS, resizeEnabled: true });
       this.transformer.nodes([view.rect]);
-      this.tipHandle.visible(false);
     } else {
+      // Arrows and polygons: dashed border plus draggable vertex handles.
       this.transformer.setAttrs({ enabledAnchors: [], resizeEnabled: false });
       this.transformer.nodes([view.group]);
-      this.tipHandle.visible(true);
-      this.updateTipHandle();
     }
-    this.uiLayer.batchDraw();
+    this.updateHandles();
   }
 
-  private updateTipHandle(): void {
+  private handleAt(index: number): Konva.Circle {
+    while (this.handles.length <= index) {
+      const handle = new Konva.Circle({
+        radius: 7,
+        fill: WHITE,
+        stroke: MAGENTA,
+        strokeWidth: 2.5,
+        hitStrokeWidth: 14,
+        visible: false,
+        name: HANDLE_NAME,
+      });
+      handle.setAttr("vertexIndex", this.handles.length);
+      this.handles.push(handle);
+      this.uiLayer.add(handle);
+    }
+    return this.handles[index];
+  }
+
+  /** Image-space points that get a drag handle for the current selection. */
+  private handlePoints(): Point[] {
     const sel = this.selection;
     const ann = sel ? findAnnotation(this.doc, sel.id) : undefined;
-    if (!sel || !ann || ann.kind !== "arrow" || sel.part !== "shape") {
-      if (this.tipHandle.visible()) {
-        this.tipHandle.visible(false);
-        this.uiLayer.batchDraw();
-      }
-      return;
-    }
-    this.tipHandle.position(this.toScreen(ann.tip));
-    this.tipHandle.visible(true);
+    if (!sel || !ann || sel.part !== "shape") return [];
+    if (ann.kind === "arrow") return [ann.tip];
+    if (ann.kind === "polygon") return ann.points;
+    return [];
+  }
+
+  private updateHandles(): void {
+    const points = this.handlePoints();
+    points.forEach((p, i) => {
+      const handle = this.handleAt(i);
+      handle.position(this.toScreen(p));
+      handle.visible(true);
+    });
+    for (let i = points.length; i < this.handles.length; i++) this.handles[i].visible(false);
     this.uiLayer.batchDraw();
   }
 
@@ -468,7 +523,7 @@ export class Editor {
 
   private resolveHit(target: Konva.Node | null): Selection | null {
     if (!target || target === this.stage || target === this.photo) return null;
-    if (target === this.tipHandle || target.findAncestor("Transformer", true)) return null;
+    if (target.hasName(HANDLE_NAME) || target.findAncestor("Transformer", true)) return null;
     const group = target.findAncestor(`.${ANN_NAME}`, true);
     if (!group) return null;
     const id = group.getAttr("annId") as string;
@@ -478,8 +533,9 @@ export class Editor {
 
   private updateCursor(hover: Konva.Node | null): void {
     const c = this.stage.container();
-    if (this.drag?.kind === "pan") c.style.cursor = "grabbing";
-    else if (hover === this.tipHandle) c.style.cursor = "crosshair";
+    const d = this.drag;
+    if (d?.kind === "pan" || (d?.kind === "polyclick" && d.panning)) c.style.cursor = "grabbing";
+    else if (hover?.hasName(HANDLE_NAME)) c.style.cursor = "crosshair";
     else if (hover?.findAncestor("Transformer", true)) c.style.cursor = "";
     else if (this.tool !== "select") c.style.cursor = "crosshair";
     else c.style.cursor = this.resolveHit(hover) ? "move" : "default";
@@ -504,11 +560,13 @@ export class Editor {
     }
     if (!this.original) return;
     if (e.target.findAncestor("Transformer", true)) return;
-    const p = this.toImage(this.screenFromEvent(evt));
+    const screen = this.screenFromEvent(evt);
+    const p = this.toImage(screen);
     evt.preventDefault();
 
-    if (e.target === this.tipHandle && this.selection) {
-      this.drag = { kind: "tip", id: this.selection.id, moved: false };
+    if (e.target.hasName(HANDLE_NAME) && this.selection) {
+      const index = (e.target as Konva.Node).getAttr("vertexIndex") as number;
+      this.drag = { kind: "vertex", id: this.selection.id, index, moved: false };
       this.bindWindowDrag();
       return;
     }
@@ -534,6 +592,11 @@ export class Editor {
         this.bindWindowDrag();
         break;
       }
+      case "polygon": {
+        this.drag = { kind: "polyclick", startScreen: screen, startView: { ...this.view }, panning: false };
+        this.bindWindowDrag();
+        break;
+      }
       case "text": {
         const ann: Annotation = {
           id: newId(),
@@ -554,7 +617,7 @@ export class Editor {
   }
 
   private handleDblClick(e: Konva.KonvaEventObject<MouseEvent>): void {
-    if (!this.original || this.editing) return;
+    if (!this.original || this.editing || this.placing) return;
     const hit = this.resolveHit(e.target);
     if (!hit || hit.part !== "label") return;
     e.evt.preventDefault();
@@ -604,6 +667,15 @@ export class Editor {
     this.updateCursor(null);
   }
 
+  private panTo(start: ViewTransform, startScreen: Point, screen: Point): void {
+    this.autoFit = false;
+    this.setView({
+      scale: start.scale,
+      x: start.x + screen.x - startScreen.x,
+      y: start.y + screen.y - startScreen.y,
+    });
+  }
+
   private handleWindowMove(evt: MouseEvent): void {
     const d = this.drag;
     if (!d) return;
@@ -611,12 +683,15 @@ export class Editor {
     const p = this.toImage(screen);
     switch (d.kind) {
       case "pan":
-        this.autoFit = false;
-        this.setView({
-          scale: d.startView.scale,
-          x: d.startView.x + screen.x - d.startScreen.x,
-          y: d.startView.y + screen.y - d.startScreen.y,
-        });
+        this.panTo(d.startView, d.startScreen, screen);
+        break;
+      case "polyclick":
+        if (!d.panning && dist(screen, d.startScreen) > PAN_THRESHOLD) {
+          d.panning = true;
+          this.updateCursor(null);
+        }
+        if (d.panning) this.panTo(d.startView, d.startScreen, screen);
+        else this.updatePolygonPreview(screen);
         break;
       case "move": {
         const dx = p.x - d.start.x;
@@ -632,10 +707,13 @@ export class Editor {
         this.syncOne(d.id);
         break;
       }
-      case "tip": {
+      case "vertex": {
         const ann = findAnnotation(this.doc, d.id);
-        if (!ann || ann.kind !== "arrow") return;
-        ann.tip = this.clampPoint(p);
+        if (!ann) return;
+        const q = this.clampPoint(p);
+        if (ann.kind === "arrow") ann.tip = q;
+        else if (ann.kind === "polygon" && ann.points[d.index]) ann.points[d.index] = q;
+        else return;
         d.moved = true;
         this.syncOne(d.id);
         break;
@@ -657,6 +735,12 @@ export class Editor {
     } else if (src.kind === "rect" && dst.kind === "rect") {
       dst.x = clamp(src.x + dx, 0, Math.max(0, this.imgW - src.w));
       dst.y = clamp(src.y + dy, 0, Math.max(0, this.imgH - src.h));
+    } else if (src.kind === "polygon" && dst.kind === "polygon") {
+      // Shift every corner by the same amount, keeping the outline inside the photo.
+      const b = bbox(src.points);
+      const sx = clamp(dx, -b.x, Math.max(-b.x, this.imgW - (b.x + b.w)));
+      const sy = clamp(dy, -b.y, Math.max(-b.y, this.imgH - (b.y + b.h)));
+      dst.points = src.points.map((q) => ({ x: q.x + sx, y: q.y + sy }));
     }
   }
 
@@ -667,13 +751,16 @@ export class Editor {
     this.unbindWindowDrag();
     switch (d.kind) {
       case "move":
-      case "tip":
+      case "vertex":
         if (d.moved) this.commit();
         break;
       case "create":
         d.preview.destroy();
         d.current = this.toImage(this.screenFromEvent(evt));
         this.finishCreate(d);
+        break;
+      case "polyclick":
+        if (!d.panning) this.addPolygonPoint(d.startScreen);
         break;
       case "pan":
         break;
@@ -749,7 +836,7 @@ export class Editor {
       ann.label.x = a.x - box.w / 2;
       ann.label.y = a.y - box.h / 2;
     } else {
-      this.placeRectLabel(ann, box);
+      this.placeLabelBeside(ann.label, { x: ann.x, y: ann.y, w: ann.w, h: ann.h }, box);
     }
     this.clampLabel(ann.label, box);
     this.syncOne(ann.id);
@@ -757,20 +844,137 @@ export class Editor {
     this.startEditing(ann.id);
   }
 
-  /** First outer corner position (right, left, below, above) that fits in the photo. */
-  private placeRectLabel(ann: RectAnnotation, box: Box): void {
+  /** First outer position (right, left, below, above) where a label of `size` fits in the photo. */
+  private placeLabelBeside(label: Label, around: Box, size: Box): void {
     const gap = this.style.stroke * 3;
     const candidates: Point[] = [
-      { x: ann.x + ann.w + gap, y: ann.y },
-      { x: ann.x - gap - box.w, y: ann.y },
-      { x: ann.x, y: ann.y + ann.h + gap },
-      { x: ann.x, y: ann.y - gap - box.h },
-      { x: ann.x + gap, y: ann.y + gap },
+      { x: around.x + around.w + gap, y: around.y },
+      { x: around.x - gap - size.w, y: around.y },
+      { x: around.x, y: around.y + around.h + gap },
+      { x: around.x, y: around.y - gap - size.h },
+      { x: around.x + gap, y: around.y + gap },
     ];
-    const fits = (p: Point) => p.x >= 0 && p.y >= 0 && p.x + box.w <= this.imgW && p.y + box.h <= this.imgH;
+    const fits = (p: Point) => p.x >= 0 && p.y >= 0 && p.x + size.w <= this.imgW && p.y + size.h <= this.imgH;
     const pos = candidates.find(fits) ?? candidates[candidates.length - 1];
-    ann.label.x = pos.x;
-    ann.label.y = pos.y;
+    label.x = pos.x;
+    label.y = pos.y;
+  }
+
+  // ---------------------------------------------------------------- polygon placement
+
+  private createPolygonPreview(): PolygonPreview {
+    const group = new Konva.Group({ listening: false });
+    const pathWhite = new Konva.Line({ stroke: WHITE, strokeWidth: 6, lineJoin: "round", lineCap: "round" });
+    const path = new Konva.Line({ stroke: MAGENTA, strokeWidth: 2.5, lineJoin: "round", lineCap: "round" });
+    const rubber = new Konva.Line({ stroke: MAGENTA, strokeWidth: 2, dash: [6, 4], lineCap: "round" });
+    const dots = new Konva.Group();
+    const first = new Konva.Circle({ radius: 7, fill: WHITE, stroke: MAGENTA, strokeWidth: 2.5 });
+    group.add(pathWhite, path, rubber, dots, first);
+    this.uiLayer.add(group);
+    return { group, pathWhite, path, rubber, dots, first };
+  }
+
+  /** Re-projects the preview into screen space; `cursor` drives the rubber band and close hint. */
+  private updatePolygonPreview(cursor?: Point | null): void {
+    const placing = this.placing;
+    if (!placing) return;
+    const pv = placing.preview;
+    const pts = placing.points.map((p) => this.toScreen(p));
+    const flat = pts.flatMap((p) => [p.x, p.y]);
+    pv.pathWhite.points(flat);
+    pv.path.points(flat);
+    const last = pts[pts.length - 1];
+    if (cursor) {
+      pv.rubber.points([last.x, last.y, cursor.x, cursor.y]);
+      pv.rubber.visible(true);
+    } else {
+      pv.rubber.visible(false);
+    }
+    while (pv.dots.getChildren().length < pts.length - 1) {
+      pv.dots.add(new Konva.Circle({ radius: 3.5, fill: MAGENTA, stroke: WHITE, strokeWidth: 1.5 }));
+    }
+    pv.dots.getChildren().forEach((dot, i) => {
+      const p = pts[i + 1];
+      if (p) {
+        dot.position(p);
+        dot.visible(true);
+      } else {
+        dot.visible(false);
+      }
+    });
+    const closable = pts.length >= 3 && !!cursor && dist(cursor, pts[0]) <= CLOSE_RADIUS;
+    pv.first.position(pts[0]);
+    pv.first.setAttrs({ fill: closable ? MAGENTA : WHITE, radius: closable ? 9 : 7 });
+    this.stage.container().style.cursor = closable ? "pointer" : "crosshair";
+    this.uiLayer.batchDraw();
+  }
+
+  private addPolygonPoint(screen: Point): void {
+    const p = this.clampPoint(this.toImage(screen));
+    if (!this.placing) {
+      this.placing = { points: [p], preview: this.createPolygonPreview() };
+      this.updatePolygonPreview(screen);
+      return;
+    }
+    const pts = this.placing.points;
+    if (dist(screen, this.toScreen(pts[0])) <= CLOSE_RADIUS) {
+      // Clicking the first point closes the outline; with fewer than three
+      // points the click is ignored instead of stacking a corner on it.
+      if (pts.length >= 3) this.finishPolygon();
+      return;
+    }
+    if (dist(screen, this.toScreen(pts[pts.length - 1])) <= DUPLICATE_RADIUS) return;
+    pts.push(p);
+    this.updatePolygonPreview(screen);
+  }
+
+  /** Backspace while placing: drop the last corner (the whole outline when none is left). */
+  removeLastPolygonPoint(): void {
+    const placing = this.placing;
+    if (!placing) return;
+    placing.points.pop();
+    if (placing.points.length === 0) {
+      this.cancelPolygon();
+      return;
+    }
+    this.updatePolygonPreview(this.stage.getPointerPosition());
+  }
+
+  /** Abandon the polygon being placed. */
+  cancelPolygon(): void {
+    const placing = this.placing;
+    if (!placing) return;
+    this.placing = null;
+    placing.preview.group.destroy();
+    this.uiLayer.batchDraw();
+    this.updateCursor(null);
+    this.events.onChange();
+  }
+
+  private finishPolygon(): void {
+    const placing = this.placing;
+    if (!placing) return;
+    this.placing = null;
+    placing.preview.group.destroy();
+    this.uiLayer.batchDraw();
+    if (placing.points.length < 3) return;
+    const ann: PolygonAnnotation = {
+      id: newId(),
+      kind: "polygon",
+      points: placing.points,
+      label: { x: 0, y: 0, text: "" },
+    };
+    this.doc.annotations.push(ann);
+    this.pendingCreate = ann.id;
+    this.render();
+    const view = this.views.get(ann.id)!;
+    const box = view.label.getBox();
+    this.placeLabelBeside(ann.label, bbox(ann.points), box);
+    this.clampLabel(ann.label, box);
+    this.syncOne(ann.id);
+    this.select({ id: ann.id, part: "label" });
+    this.startEditing(ann.id);
+    this.updateCursor(null);
   }
 
   // ---------------------------------------------------------------- transformer (rect resize)
@@ -885,5 +1089,3 @@ export class Editor {
     if (this.selection) this.startEditing(this.selection.id);
   }
 }
-
-export type { ArrowAnnotation };
