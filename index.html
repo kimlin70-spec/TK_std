@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>사진 주석 도구</title>
+    <script type="module" src="/src/main.ts"></script>
+  </head>
+  <body>
+    <div id="toolbar">
+      <button id="btn-open" title="사진 열기 (Ctrl+O)">열기</button>
+      <span class="sep"></span>
+      <button id="btn-select" title="선택·이동 (클릭 후 드래그, Del 삭제)">선택</button>
+      <button id="btn-arrow" title="화살표 (드래그: 시작점에 글상자, 끝점에 화살촉)">화살표</button>
+      <button id="btn-rect" title="네모 (드래그로 영역 표시)">네모</button>
+      <button id="btn-text" title="글상자 (클릭한 곳에 입력)">글상자</button>
+      <span class="sep"></span>
+      <button id="btn-undo" title="실행취소 (Ctrl+Z) · 다시실행 Ctrl+Y">실행취소</button>
+      <span class="sep"></span>
+      <button id="btn-save" title="주석 합성 PNG 저장 (Ctrl+S)">저장</button>
+      <button id="btn-copy" title="주석 합성 이미지를 클립보드로 복사 (Ctrl+Shift+C)">복사</button>
+    </div>
+    <div id="canvas-wrap" data-tool="select">
+      <div id="stage"></div>
+      <textarea id="text-editor" spellcheck="false" wrap="off"></textarea>
+      <div id="empty-hint">
+        <div class="hint-title">사진을 불러오세요</div>
+        <div class="hint-body">Ctrl+V 캡처 붙여넣기 · 파일 끌어다 놓기 · 열기 버튼</div>
+      </div>
+    </div>
+    <div id="toast"></div>
+    <input id="file-input" type="file" accept="image/*" hidden />
+  </body>
+</html>

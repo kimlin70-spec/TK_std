@@ -1,0 +1,151 @@
+:root {
+  color-scheme: dark;
+  --bg: #1b1c21;
+  --panel: #2a2b32;
+  --border: #3d3e47;
+  --text: #ececf1;
+  --muted: #8b8c97;
+  --accent: #e01ee0;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--text);
+  font-family: "Malgun Gothic", "맑은 고딕", "Apple SD Gothic Neo", "NanumGothic", "Noto Sans KR", sans-serif;
+  font-size: 14px;
+  user-select: none;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+}
+
+#toolbar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+}
+
+#toolbar button {
+  appearance: none;
+  border: 1px solid #4b4c56;
+  background: #363740;
+  color: var(--text);
+  padding: 6px 14px;
+  border-radius: 6px;
+  font: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+#toolbar button:hover:not(:disabled) {
+  background: #444550;
+}
+
+#toolbar button.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  font-weight: 700;
+}
+
+#toolbar button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.sep {
+  width: 1px;
+  height: 22px;
+  background: #4b4c56;
+  margin: 0 4px;
+}
+
+#canvas-wrap {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+  background: #121317;
+}
+
+#stage {
+  position: absolute;
+  inset: 0;
+}
+
+#text-editor {
+  position: absolute;
+  display: none;
+  margin: 0;
+  padding: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: #000;
+  caret-color: #000;
+  resize: none;
+  overflow: hidden;
+  white-space: pre;
+  z-index: 5;
+  user-select: text;
+}
+
+#empty-hint {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: var(--muted);
+  pointer-events: none;
+}
+
+.hint-title {
+  font-size: 20px;
+  color: #b8b9c4;
+}
+
+.hint-body {
+  font-size: 15px;
+}
+
+#toast {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  transform: translate(-50%, 10px);
+  background: rgba(20, 20, 26, 0.94);
+  border: 1px solid #4b4c56;
+  color: #fff;
+  padding: 8px 16px;
+  border-radius: 8px;
+  opacity: 0;
+  transition:
+    opacity 0.2s,
+    transform 0.2s;
+  pointer-events: none;
+  max-width: 90vw;
+  word-break: break-all;
+  z-index: 10;
+}
+
+#toast.show {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}

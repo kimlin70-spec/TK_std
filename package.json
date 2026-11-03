@@ -1,0 +1,24 @@
+{
+  "name": "photo-annotator",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "tauri": "tauri",
+    "check:browser": "node tests/browser-check.cjs"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.12.4",
+    "@tauri-apps/plugin-dialog": "^2.8.4",
+    "konva": "^10.9.1"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.12.4",
+    "playwright": "1.63.0",
+    "typescript": "^5.9.3",
+    "vite": "^7.3.7"
+  }
+}
